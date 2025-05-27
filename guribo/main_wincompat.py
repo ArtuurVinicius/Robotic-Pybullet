@@ -8,9 +8,9 @@ import paho.mqtt.client as mqtt
 import os
 import subprocess
 
-import pybullet_data
-import subprocess
-
+# ================================
+# Função para obter caminho curto (8.3) no Windows
+# ================================
 def caminho_curto(caminho_original):
     try:
         comando = f'for %I in ("{caminho_original}") do @echo %~sI'
@@ -29,16 +29,27 @@ print(f"[INFO] Caminho pybullet_data curto: {caminho_pybullet_data_curto}")
 # MQTT Configuration and Connection
 # ================================
 mqtt_client = mqtt.Client(protocol=mqtt.MQTTv311)
+mqtt_client.username_pw_set("guri", "normal123")  # <- Adicionando autenticação
 mqtt_topic = "husky/checkin"
 
+mqtt_connected = False  # global
+
+def on_connect(client, userdata, flags, rc):
+    global mqtt_connected
+    if rc == 0:
+        mqtt_connected = True
+        print("[MQTT] Conectado com sucesso ao broker.")
+    else:
+        mqtt_connected = False
+        print(f"[MQTT] Falha na conexão. Código de retorno: {rc}")
+
+mqtt_client.on_connect = on_connect
+
 try:
-    mqtt_client.connect("localhost", 1883, 60)
-    mqtt_connected = True
-    print("[MQTT] Conectado com sucesso ao broker.")
-    print(pybullet_data.getDataPath())
+    mqtt_client.connect("192.168.1.182", 1883, 60)
+    mqtt_client.loop_start()
 except Exception as e:
-    print(f"[MQTT] Não foi possível conectar ao broker: {e}")
-    mqtt_connected = False
+    print(f"[MQTT] Erro ao tentar conectar: {e}")
 
 # ================================
 # Queue para exportação de dados
@@ -83,9 +94,7 @@ def get_robot_position(husky_id):
 def compute_control(target_x, target_y, current_x, current_y):
     dx = target_x - current_x
     dy = target_y - current_y
-    angle = math.atan2(dy, dx)
-    linear_speed = 5.0
-    return linear_speed
+    return 5.0  # Velocidade constante para movimento simples
 
 def stop_robot(husky_id):
     for j in left_wheels + right_wheels:
@@ -164,7 +173,7 @@ def operation_thread():
     stop_robot(husky)
     time.sleep(1)
     p.disconnect()
-    input("Pressione Enter para sair...")  # Evita que feche automaticamente
+    input("Pressione Enter para sair...")  # Evita fechamento automático
 
 # ================================
 # Main

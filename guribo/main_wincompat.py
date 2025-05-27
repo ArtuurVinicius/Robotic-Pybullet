@@ -5,7 +5,29 @@ import threading
 import queue
 import math
 import paho.mqtt.client as mqtt
+import os
+import subprocess
 
+import pybullet_data
+import subprocess
+
+def caminho_curto(caminho_original):
+    try:
+        comando = f'for %I in ("{caminho_original}") do @echo %~sI'
+        resultado = subprocess.check_output(comando, shell=True, text=True)
+        return resultado.strip()
+    except subprocess.CalledProcessError:
+        print("Erro ao obter caminho curto.")
+        return caminho_original  # fallback
+
+# Use caminho curto para o pybullet_data
+caminho_pybullet_data = pybullet_data.getDataPath()
+caminho_pybullet_data_curto = caminho_curto(caminho_pybullet_data)
+print(f"[INFO] Caminho pybullet_data curto: {caminho_pybullet_data_curto}")
+
+# ================================
+# MQTT Configuration and Connection
+# ================================
 mqtt_client = mqtt.Client(protocol=mqtt.MQTTv311)
 mqtt_topic = "husky/checkin"
 
@@ -13,12 +35,19 @@ try:
     mqtt_client.connect("localhost", 1883, 60)
     mqtt_connected = True
     print("[MQTT] Conectado com sucesso ao broker.")
+    print(pybullet_data.getDataPath())
 except Exception as e:
     print(f"[MQTT] Não foi possível conectar ao broker: {e}")
     mqtt_connected = False
 
+# ================================
+# Queue para exportação de dados
+# ================================
 results_queue = queue.Queue()
 
+# ================================
+# Lista de Pontos de Inspeção
+# ================================
 inspection_points = [
     {"id": "Base1", "pos": [2, 0]},
     {"id": "Base2", "pos": [2, 2]},
@@ -30,14 +59,23 @@ CHECKIN_RADIUS = 0.3
 left_wheels = [2, 4]
 right_wheels = [3, 5]
 
+# ================================
+# Ambiente PyBullet
+# ================================
 def setup_environment():
-    p.connect(p.GUI)
-    p.setAdditionalSearchPath(pybullet_data.getDataPath())
+    client_id = p.connect(p.GUI)
+    if client_id < 0:
+        print("[ERROR] Não foi possível iniciar o PyBullet em modo GUI.")
+        exit(1)
+    p.setAdditionalSearchPath(caminho_pybullet_data_curto)
     p.setGravity(0, 0, -9.8)
     p.loadURDF("plane.urdf")
     husky = p.loadURDF("husky/husky.urdf", basePosition=[0, 0, 0.1])
     return husky
 
+# ================================
+# Movimento e Navegação
+# ================================
 def get_robot_position(husky_id):
     pos, _ = p.getBasePositionAndOrientation(husky_id)
     return pos[0], pos[1]
@@ -45,7 +83,9 @@ def get_robot_position(husky_id):
 def compute_control(target_x, target_y, current_x, current_y):
     dx = target_x - current_x
     dy = target_y - current_y
-    return 5.0
+    angle = math.atan2(dy, dx)
+    linear_speed = 5.0
+    return linear_speed
 
 def stop_robot(husky_id):
     for j in left_wheels + right_wheels:
@@ -57,6 +97,9 @@ def move_robot(husky_id, velocity):
     for j in right_wheels:
         p.setJointMotorControl2(husky_id, j, p.VELOCITY_CONTROL, targetVelocity=velocity, force=100)
 
+# ================================
+# Exportação via MQTT
+# ================================
 def export_data(message):
     if not mqtt_connected:
         print("[MQTT] Broker não conectado. Mensagem ignorada.")
@@ -89,6 +132,9 @@ def export_thread():
             print(f"[Export Error] {e}")
             break
 
+# ================================
+# Operação Principal (thread)
+# ================================
 def operation_thread():
     husky = setup_environment()
     print("[INFO] Iniciando inspeção automática...")
@@ -118,7 +164,11 @@ def operation_thread():
     stop_robot(husky)
     time.sleep(1)
     p.disconnect()
+    input("Pressione Enter para sair...")  # Evita que feche automaticamente
 
+# ================================
+# Main
+# ================================
 def main():
     op_thread = threading.Thread(target=operation_thread)
     exp_thread = threading.Thread(target=export_thread, daemon=True)

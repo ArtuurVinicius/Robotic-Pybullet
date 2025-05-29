@@ -6,46 +6,79 @@ import queue
 import math
 import paho.mqtt.client as mqtt
 
+# ================================
+# MQTT Config
+# ================================
 mqtt_client = mqtt.Client(protocol=mqtt.MQTTv311)
+mqtt_client.username_pw_set("guri", "normal123")
 mqtt_topic = "husky/checkin"
+mqtt_connected = False
+
+def on_connect(client, userdata, flags, rc):
+    global mqtt_connected
+    if rc == 0:
+        mqtt_connected = True
+        print("[MQTT] Conectado com sucesso ao broker.")
+    else:
+        mqtt_connected = False
+        print(f"[MQTT] Falha na conexão. Código de retorno: {rc}")
+
+mqtt_client.on_connect = on_connect
 
 try:
-    mqtt_client.connect("localhost", 1883, 60)
-    mqtt_connected = True
-    print("[MQTT] Conectado com sucesso ao broker.")
+    mqtt_client.connect("192.168.1.182", 1883, 60)
+    mqtt_client.loop_start()
 except Exception as e:
-    print(f"[MQTT] Não foi possível conectar ao broker: {e}")
-    mqtt_connected = False
+    print(f"[MQTT] Erro ao tentar conectar: {e}")
 
+# ================================
+# Fila para dados
+# ================================
 results_queue = queue.Queue()
 
-inspection_points = [
-    {"id": "Base1", "pos": [2, 0]},
-    {"id": "Base2", "pos": [2, 2]},
-    {"id": "Base3", "pos": [0, 2]},
-    {"id": "Base4", "pos": [0, 0]}
-]
+# ================================
+# Checkpoints em linha reta no eixo X
+# ================================
+def gerar_checkpoints_linha(quantidade=5, espacamento=2.0):
+    pontos = []
+    for i in range(quantidade):
+        x = i * espacamento  # Checkpoints em x=0, 2, 4, 6, 8
+        y = 0.0              # Todos alinhados em y=0
+        pontos.append({"id": f"Checkpoint{i+1}", "pos": [x, y]})
+    return pontos
 
+inspection_points = gerar_checkpoints_linha()
+
+# ================================
+# Parâmetros de movimento
+# ================================
 CHECKIN_RADIUS = 0.3
 left_wheels = [2, 4]
 right_wheels = [3, 5]
 
+# ================================
+# Ambiente PyBullet
+# ================================
 def setup_environment():
-    p.connect(p.GUI)
+    client_id = p.connect(p.GUI)
+    if client_id < 0:
+        print("[ERROR] Não foi possível iniciar o PyBullet.")
+        exit(1)
     p.setAdditionalSearchPath(pybullet_data.getDataPath())
     p.setGravity(0, 0, -9.8)
     p.loadURDF("plane.urdf")
     husky = p.loadURDF("husky/husky.urdf", basePosition=[0, 0, 0.1])
     return husky
 
+# ================================
+# Movimento e controle
+# ================================
 def get_robot_position(husky_id):
     pos, _ = p.getBasePositionAndOrientation(husky_id)
     return pos[0], pos[1]
 
 def compute_control(target_x, target_y, current_x, current_y):
-    dx = target_x - current_x
-    dy = target_y - current_y
-    return 5.0
+    return 5.0  # Velocidade constante para frente
 
 def stop_robot(husky_id):
     for j in left_wheels + right_wheels:
@@ -57,6 +90,9 @@ def move_robot(husky_id, velocity):
     for j in right_wheels:
         p.setJointMotorControl2(husky_id, j, p.VELOCITY_CONTROL, targetVelocity=velocity, force=100)
 
+# ================================
+# Exportação MQTT
+# ================================
 def export_data(message):
     if not mqtt_connected:
         print("[MQTT] Broker não conectado. Mensagem ignorada.")
@@ -83,15 +119,16 @@ def export_thread():
                 export_data(message)
                 results_queue.task_done()
                 time.sleep(0.1)
-        except queue.Empty:
-            continue
         except Exception as e:
             print(f"[Export Error] {e}")
             break
 
+# ================================
+# Thread principal da operação
+# ================================
 def operation_thread():
     husky = setup_environment()
-    print("[INFO] Iniciando inspeção automática...")
+    print("[INFO] Iniciando trajeto em linha reta com checkpoints...")
 
     for point in inspection_points:
         target_x, target_y = point["pos"]
@@ -105,8 +142,8 @@ def operation_thread():
                 stop_robot(husky)
                 results_queue.put((point["id"], (x, y)))
                 print(f"[CHECK-IN] {point['id']}")
+                time.sleep(5)
                 reached = True
-                time.sleep(1)
             else:
                 velocity = compute_control(target_x, target_y, x, y)
                 move_robot(husky, velocity)
@@ -114,11 +151,15 @@ def operation_thread():
             p.stepSimulation()
             time.sleep(1 / 240.0)
 
-    print("[INFO] Rota concluída. Desconectando.")
+    print("[INFO] Trajeto em linha reta completo. Desconectando.")
     stop_robot(husky)
     time.sleep(1)
     p.disconnect()
+    input("Pressione Enter para sair...")
 
+# ================================
+# Main
+# ================================
 def main():
     op_thread = threading.Thread(target=operation_thread)
     exp_thread = threading.Thread(target=export_thread, daemon=True)
